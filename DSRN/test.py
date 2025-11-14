@@ -216,6 +216,7 @@ class DSRNTester:
 
         return metrics
 
+    @torch.no_grad()
     def test_abnormal_dataset(self, abnormal_dataset, output_dir=None):
         """
         Test on real abnormal images
@@ -255,29 +256,29 @@ class DSRNTester:
             fig, axes = plt.subplots(2, 3, figsize=(15, 10))
 
             # Row 1: Input, Reconstruction, Residual
-            axes[0, 0].imshow(x_abnormal.cpu().numpy()[0, 0], cmap='gray')
+            axes[0, 0].imshow(x_abnormal.detach().cpu().numpy()[0, 0], cmap='gray')
             axes[0, 0].set_title('Input (Abnormal)', fontsize=12)
             axes[0, 0].axis('off')
 
-            axes[0, 1].imshow(x_recon.cpu().numpy()[0, 0], cmap='gray')
+            axes[0, 1].imshow(x_recon.detach().cpu().numpy()[0, 0], cmap='gray')
             axes[0, 1].set_title('Reconstruction', fontsize=12)
             axes[0, 1].axis('off')
 
-            axes[0, 2].imshow(residual.cpu().numpy()[0, 0], cmap='hot')
+            axes[0, 2].imshow(residual.detach().cpu().numpy()[0, 0], cmap='hot')
             axes[0, 2].set_title('Residual', fontsize=12)
             axes[0, 2].axis('off')
 
             # Row 2: Predicted anomaly map, Fusion weights, GT mask (if available)
-            axes[1, 0].imshow(anomaly_map.cpu().numpy()[0, 0], cmap='hot', vmin=0, vmax=1)
+            axes[1, 0].imshow(anomaly_map.detach().cpu().numpy()[0, 0], cmap='hot', vmin=0, vmax=1)
             axes[1, 0].set_title('Predicted Anomaly Map', fontsize=12)
             axes[1, 0].axis('off')
 
-            axes[1, 1].imshow(fusion_weights.cpu().numpy()[0, 0], cmap='viridis', vmin=0, vmax=1)
+            axes[1, 1].imshow(fusion_weights.detach().cpu().numpy()[0, 0], cmap='viridis', vmin=0, vmax=1)
             axes[1, 1].set_title('Fusion Weights', fontsize=12)
             axes[1, 1].axis('off')
 
             if mask_gt.sum() > 0:
-                axes[1, 2].imshow(mask_gt.cpu().numpy()[0, 0], cmap='gray')
+                axes[1, 2].imshow(mask_gt.detach().cpu().numpy()[0, 0], cmap='gray')
                 axes[1, 2].set_title('Ground Truth Mask', fontsize=12)
             else:
                 axes[1, 2].text(0.5, 0.5, 'No GT Mask', ha='center', va='center', fontsize=14)
