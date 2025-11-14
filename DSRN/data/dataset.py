@@ -135,7 +135,7 @@ class DSRNDataset(Dataset):
 
         # Resize
         if image.shape[0] != self.image_size or image.shape[1] != self.image_size:
-            image = cv2.resize(image, (self.image_size, self.image_size))
+            image = cv2.resize(image, (self.image_size, self.image_size), interpolation=cv2.INTER_LINEAR)
 
         return image
 
@@ -143,12 +143,19 @@ class DSRNDataset(Dataset):
         """
         Create ROI mask for lesion placement
 
-        Simple version: Use entire image as ROI
-        You can improve this by detecting actual tooth regions
-        """
-        roi_mask = np.ones_like(image, dtype=np.float32)
+        Args:
+            image: [H, W] numpy array
 
-        # Avoid borders
+        Returns:
+            roi_mask: [H, W] numpy array with 1 for ROI, 0 for background
+        """
+        # Get image shape
+        H, W = image.shape
+
+        # Initialize ROI mask (entire image is ROI)
+        roi_mask = np.ones((H, W), dtype=np.float32)
+
+        # Avoid borders (30 pixels from each edge)
         border = 30
         roi_mask[:border, :] = 0
         roi_mask[-border:, :] = 0
@@ -163,13 +170,18 @@ class DSRNDataset(Dataset):
     def __getitem__(self, idx):
         """
         Returns:
-            x_normal: [1, H, W] original normal image
-            x_lesion: [1, H, W] image with synthetic lesion
-            mask_lesion: [1, H, W] lesion mask
+            dict with keys:
+                - x_normal: [1, H, W] original normal image
+                - x_lesion: [1, H, W] image with synthetic lesion
+                - mask_lesion: [1, H, W] lesion mask
         """
         # Load normal image
         image_path = self.image_paths[idx]
         x_normal = self._load_and_preprocess(image_path)
+
+        # Ensure x_normal is 2D
+        if x_normal.ndim != 2:
+            raise ValueError(f"Image should be 2D, got shape {x_normal.shape}")
 
         # Add synthetic lesion with probability
         if random.random() < self.lesion_prob:
@@ -177,25 +189,31 @@ class DSRNDataset(Dataset):
             roi_mask = self._create_roi_mask(x_normal)
 
             # Synthesize lesion
-            x_lesion, mask_lesion, _, _ = self.lesion_synthesizer.synthesize(
-                x_normal.copy(),
-                roi_mask,
-                lesion_type='random'  # random, radiolucent, mixed
-            )
+            try:
+                x_lesion, mask_lesion, _, _ = self.lesion_synthesizer.synthesize(
+                    x_normal.copy(),
+                    roi_mask,
+                    lesion_type='random'  # random, radiolucent, mixed
+                )
+            except Exception as e:
+                # If synthesis fails, use original without lesion
+                print(f"[Warning] Lesion synthesis failed for {image_path}: {e}")
+                x_lesion = x_normal.copy()
+                mask_lesion = np.zeros_like(x_normal)
         else:
             # No lesion (for prototype learning)
             x_lesion = x_normal.copy()
             mask_lesion = np.zeros_like(x_normal)
 
-        # Convert to torch tensors
-        x_normal = torch.from_numpy(x_normal).unsqueeze(0)  # [1, H, W]
-        x_lesion = torch.from_numpy(x_lesion).unsqueeze(0)  # [1, H, W]
-        mask_lesion = torch.from_numpy(mask_lesion).unsqueeze(0)  # [1, H, W]
+        # Convert to torch tensors and add channel dimension
+        x_normal = torch.from_numpy(x_normal).unsqueeze(0).float()  # [1, H, W]
+        x_lesion = torch.from_numpy(x_lesion).unsqueeze(0).float()  # [1, H, W]
+        mask_lesion = torch.from_numpy(mask_lesion).unsqueeze(0).float()  # [1, H, W]
 
         return {
-            'x_normal': x_normal,  # Ground truth (original)
-            'x_lesion': x_lesion,  # Input (with synthetic lesion)
-            'mask_lesion': mask_lesion,  # Lesion location
+            'x_normal': x_normal,      # Ground truth (original)
+            'x_lesion': x_lesion,      # Input (with synthetic lesion)
+            'mask_lesion': mask_lesion, # Lesion location
         }
 
 
@@ -238,7 +256,8 @@ def create_dataloaders(config):
         batch_size=config.batch_size,
         shuffle=True,
         num_workers=config.num_workers,
-        pin_memory=True
+        pin_memory=True,
+        drop_last=True  # Drop last incomplete batch
     )
 
     val_loader = DataLoader(
@@ -246,7 +265,8 @@ def create_dataloaders(config):
         batch_size=config.batch_size,
         shuffle=False,
         num_workers=config.num_workers,
-        pin_memory=True
+        pin_memory=True,
+        drop_last=False
     )
 
     print(f"[Dataloaders] Train: {len(train_dataset)}, Val: {len(val_dataset)}")
@@ -266,24 +286,34 @@ if __name__ == "__main__":
         batch_size: int = 4
         num_workers: int = 0
         lesion_prob: float = 0.8
+        window_center: int = 2048
+        window_width: int = 4096
 
     # Test dataset
+    print("Testing DSRNDataset...")
     dataset = DSRNDataset(
         data_root=TestConfig.data_root,
         image_size=TestConfig.image_size,
-        lesion_prob=TestConfig.lesion_prob
+        lesion_prob=TestConfig.lesion_prob,
+        window_center=TestConfig.window_center,
+        window_width=TestConfig.window_width
     )
 
     print(f"\nDataset size: {len(dataset)}")
 
     # Test one sample
-    sample = dataset[0]
+    try:
+        sample = dataset[0]
 
-    print(f"\nSample keys: {sample.keys()}")
-    print(f"x_normal shape: {sample['x_normal'].shape}")
-    print(f"x_lesion shape: {sample['x_lesion'].shape}")
-    print(f"mask_lesion shape: {sample['mask_lesion'].shape}")
-    print(f"x_normal range: [{sample['x_normal'].min():.3f}, {sample['x_normal'].max():.3f}]")
-    print(f"x_lesion range: [{sample['x_lesion'].min():.3f}, {sample['x_lesion'].max():.3f}]")
+        print(f"\nSample keys: {sample.keys()}")
+        print(f"x_normal shape: {sample['x_normal'].shape}")
+        print(f"x_lesion shape: {sample['x_lesion'].shape}")
+        print(f"mask_lesion shape: {sample['mask_lesion'].shape}")
+        print(f"x_normal range: [{sample['x_normal'].min():.3f}, {sample['x_normal'].max():.3f}]")
+        print(f"x_lesion range: [{sample['x_lesion'].min():.3f}, {sample['x_lesion'].max():.3f}]")
 
-    print("\nDataset test passed!")
+        print("\nDataset test passed!")
+    except Exception as e:
+        print(f"\nDataset test failed: {e}")
+        import traceback
+        traceback.print_exc()
