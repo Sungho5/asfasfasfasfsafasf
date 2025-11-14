@@ -244,16 +244,30 @@ class DSRNTester:
             # Forward - model automatically detects anomalies
             x_recon, anomaly_map, fusion_weights = self.model(x_abnormal)
 
+            # Compute residual
+            residual = torch.abs(x_abnormal - x_recon)
+
+            # Residual-guided anomaly map (더 정확한 병변 탐지)
+            # Residual이 높은 곳 = 재구성 실패 = 병변 가능성 높음
+            residual_score = F.interpolate(
+                residual,
+                size=(256, 256),
+                mode='bilinear',
+                align_corners=False
+            )
+
+            # Combine anomaly_map with residual_score
+            # anomaly_map: 학습된 예측
+            # residual_score: 실제 재구성 오류
+            combined_anomaly = 0.3 * anomaly_map + 0.7 * residual_score
+            combined_anomaly = torch.clamp(combined_anomaly, 0.0, 1.0)
+
             # Debug: Print anomaly map statistics
             if idx == 0:
                 print(f"\n[Debug] First image anomaly map stats:")
-                print(f"  Min: {anomaly_map.min().item():.4f}")
-                print(f"  Max: {anomaly_map.max().item():.4f}")
-                print(f"  Mean: {anomaly_map.mean().item():.4f}")
-                print(f"  Std: {anomaly_map.std().item():.4f}")
-
-            # Compute residual
-            residual = torch.abs(x_abnormal - x_recon)
+                print(f"  Original anomaly_map - Min: {anomaly_map.min().item():.4f}, Max: {anomaly_map.max().item():.4f}, Mean: {anomaly_map.mean().item():.4f}")
+                print(f"  Residual score - Min: {residual_score.min().item():.4f}, Max: {residual_score.max().item():.4f}, Mean: {residual_score.mean().item():.4f}")
+                print(f"  Combined - Min: {combined_anomaly.min().item():.4f}, Max: {combined_anomaly.max().item():.4f}, Mean: {combined_anomaly.mean().item():.4f}")
 
             # Save visualization
             save_path = output_dir / f'{Path(image_name).stem}_result.png'
@@ -261,9 +275,9 @@ class DSRNTester:
             # Create visualization grid
             import matplotlib.pyplot as plt
 
-            fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+            fig, axes = plt.subplots(2, 4, figsize=(20, 10))
 
-            # Row 1: Input, Reconstruction, Residual
+            # Row 1: Input, Reconstruction, Residual, Combined Anomaly
             axes[0, 0].imshow(x_abnormal.detach().cpu().numpy()[0, 0], cmap='gray')
             axes[0, 0].set_title('Input (Abnormal)', fontsize=12)
             axes[0, 0].axis('off')
@@ -272,27 +286,37 @@ class DSRNTester:
             axes[0, 1].set_title('Reconstruction', fontsize=12)
             axes[0, 1].axis('off')
 
-            axes[0, 2].imshow(residual.detach().cpu().numpy()[0, 0], cmap='hot')
-            axes[0, 2].set_title('Residual', fontsize=12)
+            axes[0, 2].imshow(residual_score.detach().cpu().numpy()[0, 0], cmap='hot')
+            axes[0, 2].set_title('Residual Score', fontsize=12)
             axes[0, 2].axis('off')
 
-            # Row 2: Predicted anomaly map, Fusion weights, GT mask (if available)
+            axes[0, 3].imshow(combined_anomaly.detach().cpu().numpy()[0, 0], cmap='hot', vmin=0, vmax=1)
+            axes[0, 3].set_title('Combined Anomaly Map', fontsize=12, fontweight='bold')
+            axes[0, 3].axis('off')
+
+            # Row 2: Original anomaly map, Fusion weights, Thresholded, GT mask
             axes[1, 0].imshow(anomaly_map.detach().cpu().numpy()[0, 0], cmap='hot', vmin=0, vmax=1)
-            axes[1, 0].set_title('Predicted Anomaly Map', fontsize=12)
+            axes[1, 0].set_title('Original Anomaly Map', fontsize=12)
             axes[1, 0].axis('off')
 
             axes[1, 1].imshow(fusion_weights.detach().cpu().numpy()[0, 0], cmap='viridis', vmin=0, vmax=1)
             axes[1, 1].set_title('Fusion Weights', fontsize=12)
             axes[1, 1].axis('off')
 
-            if mask_gt.sum() > 0:
-                axes[1, 2].imshow(mask_gt.detach().cpu().numpy()[0, 0], cmap='gray')
-                axes[1, 2].set_title('Ground Truth Mask', fontsize=12)
-            else:
-                axes[1, 2].text(0.5, 0.5, 'No GT Mask', ha='center', va='center', fontsize=14)
-                axes[1, 2].set_xlim(0, 1)
-                axes[1, 2].set_ylim(0, 1)
+            # Thresholded combined anomaly
+            threshold_map = (combined_anomaly > 0.5).float()
+            axes[1, 2].imshow(threshold_map.detach().cpu().numpy()[0, 0], cmap='gray')
+            axes[1, 2].set_title('Thresholded (>0.5)', fontsize=12)
             axes[1, 2].axis('off')
+
+            if mask_gt.sum() > 0:
+                axes[1, 3].imshow(mask_gt.detach().cpu().numpy()[0, 0], cmap='gray')
+                axes[1, 3].set_title('Ground Truth Mask', fontsize=12)
+            else:
+                axes[1, 3].text(0.5, 0.5, 'No GT Mask', ha='center', va='center', fontsize=14)
+                axes[1, 3].set_xlim(0, 1)
+                axes[1, 3].set_ylim(0, 1)
+            axes[1, 3].axis('off')
 
             plt.tight_layout()
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -332,12 +356,23 @@ class DSRNTester:
             mask_gt = batch['mask_gt'].unsqueeze(0).to(self.device)
 
             # Forward
-            _, anomaly_map, _ = self.model(x_abnormal)
+            x_recon, anomaly_map, _ = self.model(x_abnormal)
+
+            # Compute residual-guided anomaly map (same as test_abnormal_dataset)
+            residual = torch.abs(x_abnormal - x_recon)
+            residual_score = F.interpolate(
+                residual,
+                size=(256, 256),
+                mode='bilinear',
+                align_corners=False
+            )
+            combined_anomaly = 0.3 * anomaly_map + 0.7 * residual_score
+            combined_anomaly = torch.clamp(combined_anomaly, 0.0, 1.0)
 
             # Only compute if GT mask exists
             if mask_gt.sum() > 0:
-                # Threshold anomaly map
-                anomaly_pred = (anomaly_map > 0.5).float()
+                # Threshold combined anomaly map
+                anomaly_pred = (combined_anomaly > 0.5).float()
 
                 # Compute metrics
                 intersection = (anomaly_pred * mask_gt).sum()
