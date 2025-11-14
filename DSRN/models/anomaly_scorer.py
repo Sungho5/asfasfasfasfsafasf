@@ -42,6 +42,11 @@ class SpatialAnomalyScorer(nn.Module):
             nn.Sigmoid()
         )
 
+        # 🔥 Initialize final conv bias to produce ~0.1 output after sigmoid
+        # sigmoid(-2) ≈ 0.12, sigmoid(0) = 0.5
+        with torch.no_grad():
+            self.scorer[-2].bias.fill_(-2.0)  # Bias of final conv before sigmoid
+
         # Multi-scale aggregation
         self.aggregate = nn.ModuleDict({
             'scale_1': nn.Conv2d(1, 1, 3, 1, 1),

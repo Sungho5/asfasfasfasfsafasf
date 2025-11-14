@@ -43,9 +43,9 @@ class DSRNConfig:
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
 
-    # Loss weights
+    # Loss weights (Adjusted for better balance)
     lambda_recon: float = 1.0
-    lambda_anomaly: float = 0.5
+    lambda_anomaly: float = 0.1  # 🔥 Reduced from 0.5 to 0.1 (BCE loss is very high)
     lambda_identity: float = 0.3
     lambda_perceptual: float = 0.2
 

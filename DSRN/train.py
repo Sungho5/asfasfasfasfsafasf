@@ -79,7 +79,7 @@ class DSRNTrainer:
         self.sobel_x = sobel_x.to(self.device)
         self.sobel_y = sobel_y.to(self.device)
 
-    def compute_losses(self, x_normal, x_lesion, mask_lesion, x_recon, anomaly_map):
+    def compute_losses(self, x_normal, x_lesion, mask_lesion, x_recon, anomaly_map, epoch=1):
         """
         Compute all losses with enhanced components
 
@@ -89,6 +89,7 @@ class DSRNTrainer:
             mask_lesion: [B, 1, H, W] lesion mask
             x_recon: [B, 1, H, W] reconstructed output
             anomaly_map: [B, 1, H, W] predicted anomaly map
+            epoch: Current epoch (for warm-up)
 
         Returns:
             loss_dict: Dictionary of losses
@@ -113,29 +114,49 @@ class DSRNTrainer:
         loss_recon = loss_recon_global + 2.0 * loss_recon_lesion
 
         # ============================================
-        # 2. Anomaly Detection Loss (Enhanced!)
+        # 2. Anomaly Detection Loss (Enhanced with Warm-up!)
         # ============================================
 
-        # 2-1. BCE Loss (pixel-wise)
+        # 2-1. BCE Loss (pixel-wise) - Always enabled
         loss_anomaly_bce = F.binary_cross_entropy(anomaly_map, mask_lesion)
 
         # 2-2. 🔥 Dice Loss (region-wise, 경계를 더 정확하게)
-        smooth = 1e-5
+        # Use larger smooth for better gradient in early training
+        smooth = 1.0  # Increased from 1e-5 for better stability
         intersection = (anomaly_map * mask_lesion).sum(dim=[2, 3])
         union = anomaly_map.sum(dim=[2, 3]) + mask_lesion.sum(dim=[2, 3])
         dice = (2. * intersection + smooth) / (union + smooth)
         loss_anomaly_dice = 1 - dice.mean()
 
         # 2-3. 🔥 Focal Loss (hard example에 집중)
+        # Reduce gamma for easier learning
         alpha = 0.25
-        gamma = 2.0
+        gamma = 1.5  # Reduced from 2.0 for easier convergence
         bce_loss = F.binary_cross_entropy(anomaly_map, mask_lesion, reduction='none')
-        pt = torch.exp(-bce_loss)  # pt = p if y=1, else 1-p
+        pt = torch.exp(-bce_loss)
         focal_loss = alpha * (1 - pt) ** gamma * bce_loss
         loss_anomaly_focal = focal_loss.mean()
 
-        # Combined anomaly loss
-        loss_anomaly = loss_anomaly_bce + loss_anomaly_dice + 0.5 * loss_anomaly_focal
+        # 🔥 Warm-up strategy: Start with BCE only, gradually add Dice and Focal
+        if epoch <= 5:
+            # Epoch 1-5: BCE only
+            dice_weight = 0.0
+            focal_weight = 0.0
+        elif epoch <= 10:
+            # Epoch 6-10: Gradually add Dice
+            dice_weight = (epoch - 5) / 5  # 0.0 → 1.0
+            focal_weight = 0.0
+        else:
+            # Epoch 11+: Full loss
+            dice_weight = 1.0
+            focal_weight = 0.5
+
+        # Combined anomaly loss with warm-up
+        loss_anomaly = (
+            loss_anomaly_bce +
+            dice_weight * loss_anomaly_dice +
+            focal_weight * loss_anomaly_focal
+        )
 
         # ============================================
         # 3. Identity Preservation Loss
@@ -222,10 +243,10 @@ class DSRNTrainer:
             # Forward
             x_recon, anomaly_map, fusion_weights = self.model(x_lesion)
 
-            # Compute losses
+            # Compute losses (with epoch for warm-up)
             losses = self.compute_losses(
                 x_normal, x_lesion, mask_lesion,
-                x_recon, anomaly_map
+                x_recon, anomaly_map, epoch=epoch
             )
 
             # Backward
@@ -284,10 +305,10 @@ class DSRNTrainer:
             # Forward
             x_recon, anomaly_map, fusion_weights = self.model(x_lesion)
 
-            # Compute losses
+            # Compute losses (with epoch for warm-up)
             losses = self.compute_losses(
                 x_normal, x_lesion, mask_lesion,
-                x_recon, anomaly_map
+                x_recon, anomaly_map, epoch=epoch
             )
 
             # Accumulate
@@ -371,6 +392,15 @@ class DSRNTrainer:
             print(f"  └─ Recon: Global={train_losses['recon_global']:.4f} Lesion={train_losses['recon_lesion']:.4f}")
             print(f"  └─ Anomaly: BCE={train_losses['anomaly_bce']:.4f} Dice={train_losses['anomaly_dice']:.4f} Focal={train_losses['anomaly_focal']:.4f}")
             print(f"  └─ Dice Score: {train_losses['dice_score']:.4f}")
+
+            # Warm-up info
+            if epoch <= 5:
+                print(f"  └─ 🔥 Warm-up Phase 1: BCE only (Epoch {epoch}/5)")
+            elif epoch <= 10:
+                dice_w = (epoch - 5) / 5
+                print(f"  └─ 🔥 Warm-up Phase 2: BCE + Dice({dice_w:.1f}) (Epoch {epoch}/10)")
+            else:
+                print(f"  └─ ✅ Full Training: BCE + Dice + Focal")
             print()
             print(f"Val Loss:   {val_losses['total']:.4f} | "
                   f"Recon: {val_losses['recon']:.4f} | "
