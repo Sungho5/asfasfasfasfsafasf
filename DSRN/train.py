@@ -75,11 +75,45 @@ class DSRNTrainer:
         """
         # 1. Reconstruction Loss
         #    재구성 결과가 원본 정상과 같아야 함
-        loss_recon = F.mse_loss(x_recon, x_normal)
 
-        # 2. Anomaly Detection Loss
+        # 1-1. Global reconstruction
+        loss_recon_global = F.mse_loss(x_recon, x_normal)
+
+        # 1-2. 🔥 Lesion region reconstruction (병변 부분을 정확히 복구했는지)
+        if mask_lesion.sum() > 0:
+            loss_recon_lesion = F.mse_loss(
+                x_recon * mask_lesion,
+                x_normal * mask_lesion
+            )
+        else:
+            loss_recon_lesion = torch.tensor(0.0, device=x_recon.device)
+
+        # Combined
+        loss_recon = loss_recon_global + 2.0 * loss_recon_lesion  # 병변 부분에 2배 가중치
+
+        # 2. Anomaly Detection Loss (Enhanced!)
         #    병변 위치를 정확히 찾아야 함
-        loss_anomaly = F.binary_cross_entropy(anomaly_map, mask_lesion)
+
+        # 2-1. BCE Loss (pixel-wise)
+        loss_anomaly_bce = F.binary_cross_entropy(anomaly_map, mask_lesion)
+
+        # 2-2. 🔥 Dice Loss (region-wise, 경계를 더 정확하게)
+        smooth = 1e-5
+        intersection = (anomaly_map * mask_lesion).sum(dim=[2, 3])
+        union = anomaly_map.sum(dim=[2, 3]) + mask_lesion.sum(dim=[2, 3])
+        dice = (2. * intersection + smooth) / (union + smooth)
+        loss_anomaly_dice = 1 - dice.mean()
+
+        # 2-3. 🔥 Focal Loss (hard example에 집중)
+        alpha = 0.25
+        gamma = 2.0
+        bce_loss = F.binary_cross_entropy(anomaly_map, mask_lesion, reduction='none')
+        pt = torch.exp(-bce_loss)  # pt = p if y=1, else 1-p
+        focal_loss = alpha * (1 - pt) ** gamma * bce_loss
+        loss_anomaly_focal = focal_loss.mean()
+
+        # Combined anomaly loss
+        loss_anomaly = loss_anomaly_bce + loss_anomaly_dice + 0.5 * loss_anomaly_focal
 
         # 3. Identity Preservation Loss
         #    정상 부분(mask 밖)은 그대로 유지
@@ -115,7 +149,13 @@ class DSRNTrainer:
             'recon': loss_recon,
             'anomaly': loss_anomaly,
             'identity': loss_identity,
-            'perceptual': loss_perceptual
+            'perceptual': loss_perceptual,
+            # Detailed losses for monitoring
+            'recon_global': loss_recon_global,
+            'recon_lesion': loss_recon_lesion,
+            'anomaly_bce': loss_anomaly_bce,
+            'anomaly_dice': loss_anomaly_dice,
+            'anomaly_focal': loss_anomaly_focal,
         }
 
     def train_epoch(self, epoch):
@@ -127,7 +167,12 @@ class DSRNTrainer:
             'recon': 0,
             'anomaly': 0,
             'identity': 0,
-            'perceptual': 0
+            'perceptual': 0,
+            'recon_global': 0,
+            'recon_lesion': 0,
+            'anomaly_bce': 0,
+            'anomaly_dice': 0,
+            'anomaly_focal': 0,
         }
 
         pbar = tqdm(self.train_loader, desc=f'Epoch {epoch}/{self.config.num_epochs}')
@@ -185,7 +230,12 @@ class DSRNTrainer:
             'recon': 0,
             'anomaly': 0,
             'identity': 0,
-            'perceptual': 0
+            'perceptual': 0,
+            'recon_global': 0,
+            'recon_lesion': 0,
+            'anomaly_bce': 0,
+            'anomaly_dice': 0,
+            'anomaly_focal': 0,
         }
 
         pbar = tqdm(self.val_loader, desc='Validation')
@@ -272,10 +322,13 @@ class DSRNTrainer:
                   f"Recon: {train_losses['recon']:.4f} | "
                   f"Anomaly: {train_losses['anomaly']:.4f} | "
                   f"Identity: {train_losses['identity']:.4f}")
+            print(f"  └─ Recon: Global={train_losses['recon_global']:.4f} Lesion={train_losses['recon_lesion']:.4f}")
+            print(f"  └─ Anomaly: BCE={train_losses['anomaly_bce']:.4f} Dice={train_losses['anomaly_dice']:.4f} Focal={train_losses['anomaly_focal']:.4f}")
             print(f"Val Loss:   {val_losses['total']:.4f} | "
                   f"Recon: {val_losses['recon']:.4f} | "
                   f"Anomaly: {val_losses['anomaly']:.4f} | "
                   f"Identity: {val_losses['identity']:.4f}")
+            print(f"  └─ Dice Score: {1 - val_losses['anomaly_dice']:.4f}")  # Higher is better
 
             # Tensorboard
             for key in train_losses:
