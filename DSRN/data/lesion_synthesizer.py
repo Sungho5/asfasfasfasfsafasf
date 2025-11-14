@@ -22,6 +22,15 @@ class DiverseLesionSynthesizer:
             'root_resorption'
         ]
 
+        # Lesion destruction types
+        self.destruction_types = [
+            'mild',           # 약한 밝기 감소 + blur
+            'moderate',       # 중간 밝기 감소 + texture 파괴
+            'severe',         # 심한 밝기 감소 + 거의 0에 가깝게
+            'complete_hole',  # 아예 구멍 뚫기 (0으로 만들기)
+            'texture_破壞'    # Texture pattern 완전 파괴
+        ]
+
     def synthesize(self, image, num_lesions=None):
         """
         병변을 합성하여 이미지에 추가
@@ -74,8 +83,11 @@ class DiverseLesionSynthesizer:
             else:  # root_resorption
                 lesion_mask = self._create_root_resorption(h, w, center_x, center_y, radius)
 
+            # Random destruction type
+            destruction_type = random.choice(self.destruction_types)
+
             # Apply lesion effect
-            lesion_image = self._apply_lesion_effect(lesion_image, lesion_mask)
+            lesion_image = self._apply_lesion_effect(lesion_image, lesion_mask, destruction_type)
 
             # Accumulate mask
             total_mask = np.maximum(total_mask, lesion_mask)
@@ -173,35 +185,88 @@ class DiverseLesionSynthesizer:
 
         return mask
 
-    def _apply_lesion_effect(self, image, mask):
+    def _apply_lesion_effect(self, image, mask, destruction_type='moderate'):
         """
-        병변 효과 적용 (Radiolucent only)
+        병변 효과 적용 - 다양한 파괴 타입
 
-        투과성 병변 특징:
-        1. 밝기 감소 (검게)
-        2. Trabecular pattern 파괴
-        3. Smooth한 내부
+        Args:
+            image: 원본 이미지
+            mask: 병변 마스크 (0-1)
+            destruction_type: 'mild', 'moderate', 'severe', 'complete_hole', 'texture_破壞'
+
+        Returns:
+            lesion_image: 병변이 적용된 이미지
         """
+        h, w = image.shape
         lesion_image = image.copy()
 
-        # 1. Intensity reduction (radiolucent)
-        intensity_reduction = random.uniform(0.3, 0.6)
-        lesion_image = lesion_image * (1 - mask * intensity_reduction)
+        if destruction_type == 'mild':
+            # 약한 밝기 감소 + blur
+            intensity_reduction = random.uniform(0.2, 0.4)
+            blurred = gaussian_filter(image, sigma=2.0)
 
-        # 2. Trabecular pattern destruction
-        #    기존 texture를 blur로 부드럽게
-        h, w = image.shape
-        blurred = gaussian_filter(image, sigma=3.0)
+            lesion_image = image * (1 - mask * intensity_reduction)
+            lesion_image = lesion_image * (1 - mask) + blurred * mask * 0.8
 
-        # Mix original and blurred based on mask
-        lesion_image = lesion_image * (1 - mask) + blurred * mask * (1 - intensity_reduction)
+        elif destruction_type == 'moderate':
+            # 중간 밝기 감소 + texture 파괴
+            intensity_reduction = random.uniform(0.4, 0.6)
+            blurred = gaussian_filter(image, sigma=3.0)
 
-        # 3. Add subtle noise
-        noise_strength = random.uniform(0.02, 0.05)
-        noise = np.random.randn(h, w) * noise_strength
-        lesion_image = lesion_image + noise * mask
+            lesion_image = image * (1 - mask * intensity_reduction)
+            lesion_image = lesion_image * (1 - mask) + blurred * mask * 0.6
 
-        # Clip to valid range
+            # Add noise
+            noise = np.random.randn(h, w) * 0.03
+            lesion_image = lesion_image + noise * mask
+
+        elif destruction_type == 'severe':
+            # 심한 파괴 - 거의 0에 가깝게
+            intensity_reduction = random.uniform(0.7, 0.9)
+            blurred = gaussian_filter(image, sigma=4.0)
+
+            # 거의 검게 만들기
+            lesion_image = image * (1 - mask * intensity_reduction)
+
+            # 약간의 blurred texture만 남기기
+            lesion_image = lesion_image * (1 - mask) + blurred * mask * 0.2
+
+        elif destruction_type == 'complete_hole':
+            # 완전한 구멍 - 아예 0으로 만들기
+            # 중심부는 완전히 0, 가장자리는 점진적으로
+            center_mask = (mask > 0.7).astype(np.float32)
+            edge_mask = mask - center_mask
+
+            # 중심부는 0
+            lesion_image = image * (1 - center_mask)
+
+            # 가장자리는 점진적으로 감소
+            lesion_image = lesion_image * (1 - edge_mask * 0.8)
+
+        elif destruction_type == 'texture_破壞':
+            # Texture pattern 완전 파괴
+            # 1. 원본 texture 제거
+            very_blurred = gaussian_filter(image, sigma=5.0)
+
+            # 2. Random noise pattern 추가 (broken trabecular 시뮬레이션)
+            noise_pattern = np.random.randn(h, w) * 0.1
+            noise_pattern = gaussian_filter(noise_pattern, sigma=1.5)
+
+            # 3. 밝기 감소
+            intensity_reduction = random.uniform(0.5, 0.7)
+
+            # Combine
+            destroyed_texture = very_blurred * (1 - intensity_reduction) + noise_pattern * 0.3
+            destroyed_texture = np.clip(destroyed_texture, 0, 1)
+
+            # Apply to lesion area
+            lesion_image = image * (1 - mask) + destroyed_texture * mask
+
+        else:
+            # Default to moderate
+            return self._apply_lesion_effect(image, mask, 'moderate')
+
+        # Final clip
         lesion_image = np.clip(lesion_image, 0, 1)
 
         return lesion_image
@@ -251,19 +316,47 @@ class DiverseLesionSynthesizer:
 
 
 if __name__ == "__main__":
-    """Test"""
+    """Test - Show all destruction types"""
     import matplotlib.pyplot as plt
 
     # Create synthesizer
     synthesizer = DiverseLesionSynthesizer()
 
-    # Create dummy image
-    test_image = np.random.rand(256, 256) * 0.5 + 0.3
+    # Create dummy image with texture
+    test_image = np.random.rand(256, 256) * 0.3 + 0.5
+    test_image = gaussian_filter(test_image, sigma=1.0)  # Add some texture
 
-    # Synthesize
-    lesion_image, mask = synthesizer.synthesize(test_image, num_lesions=2)
+    # Test each destruction type
+    destruction_types = ['mild', 'moderate', 'severe', 'complete_hole', 'texture_破壞']
 
-    # Visualize
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    axes = axes.flatten()
+
+    # Original
+    axes[0].imshow(test_image, cmap='gray', vmin=0, vmax=1)
+    axes[0].set_title('Original', fontsize=14, fontweight='bold')
+    axes[0].axis('off')
+
+    # Each destruction type
+    for i, dest_type in enumerate(destruction_types):
+        # Create circular mask
+        mask = synthesizer._create_circular(256, 256, 128, 128, 40)
+
+        # Apply destruction
+        lesion_img = synthesizer._apply_lesion_effect(test_image, mask, dest_type)
+
+        axes[i + 1].imshow(lesion_img, cmap='gray', vmin=0, vmax=1)
+        axes[i + 1].set_title(f'{dest_type}', fontsize=14, fontweight='bold')
+        axes[i + 1].axis('off')
+
+    plt.tight_layout()
+    plt.savefig('lesion_destruction_types.png', dpi=150, bbox_inches='tight')
+    print("Saved: lesion_destruction_types.png")
+
+    # Test random synthesis
+    print("\n[Testing random synthesis with multiple lesions]")
+    lesion_image, mask = synthesizer.synthesize(test_image, num_lesions=3)
+
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
     axes[0].imshow(test_image, cmap='gray')
@@ -271,7 +364,7 @@ if __name__ == "__main__":
     axes[0].axis('off')
 
     axes[1].imshow(lesion_image, cmap='gray')
-    axes[1].set_title('With Lesion')
+    axes[1].set_title('With Lesions (Random Types)')
     axes[1].axis('off')
 
     axes[2].imshow(mask, cmap='hot')
@@ -279,5 +372,9 @@ if __name__ == "__main__":
     axes[2].axis('off')
 
     plt.tight_layout()
-    plt.savefig('lesion_synthesis_test.png', dpi=150, bbox_inches='tight')
-    print("Saved: lesion_synthesis_test.png")
+    plt.savefig('lesion_synthesis_random.png', dpi=150, bbox_inches='tight')
+    print("Saved: lesion_synthesis_random.png")
+
+    print("\n[Test Complete!]")
+    print(f"Lesion image range: [{lesion_image.min():.3f}, {lesion_image.max():.3f}]")
+    print(f"Mask range: [{mask.min():.3f}, {mask.max():.3f}]")
