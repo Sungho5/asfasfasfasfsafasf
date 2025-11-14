@@ -217,6 +217,156 @@ class DSRNDataset(Dataset):
         }
 
 
+class AbnormalDataset(Dataset):
+    """
+    Real Abnormal Image Dataset for Testing
+
+    실제 병변이 있는 이미지를 테스트
+    - 모델이 알아서 병변 위치를 찾고 재구성
+    - Ground truth mask는 optional (평가용)
+
+    Directory structure:
+        data_root/
+            images/
+                abnormal_001.png
+                abnormal_002.png
+            masks/ (optional)
+                abnormal_001.png
+                abnormal_002.png
+    """
+
+    def __init__(self, data_root, image_size=256, has_masks=False,
+                 window_center=2048, window_width=4096):
+        """
+        Args:
+            data_root: Root directory containing abnormal images
+            image_size: Target image size
+            has_masks: Whether ground truth masks are available
+            window_center: Window level center for DICOM
+            window_width: Window level width for DICOM
+        """
+        self.data_root = Path(data_root)
+        self.image_size = image_size
+        self.has_masks = has_masks
+        self.window_center = window_center
+        self.window_width = window_width
+
+        # Image and mask directories
+        self.image_dir = self.data_root / 'images'
+        self.mask_dir = self.data_root / 'masks' if has_masks else None
+
+        if not self.image_dir.exists():
+            raise ValueError(f"Image directory not found: {self.image_dir}")
+
+        if has_masks and not self.mask_dir.exists():
+            raise ValueError(f"Mask directory not found: {self.mask_dir}")
+
+        # Load image paths
+        self.image_paths = self._load_image_paths()
+
+        print(f"[AbnormalDataset] Loaded {len(self.image_paths)} abnormal images")
+        print(f"[AbnormalDataset] Ground truth masks: {'Available' if has_masks else 'Not available'}")
+
+    def _load_image_paths(self):
+        """Load all image paths from images directory"""
+        image_paths = []
+
+        extensions = ['*.png', '*.jpg', '*.jpeg', '*.bmp', '*.dcm', '*.dicom']
+
+        for ext in extensions:
+            image_paths.extend(list(self.image_dir.glob(ext)))
+
+        image_paths = sorted(image_paths)
+
+        if len(image_paths) == 0:
+            raise ValueError(f"No images found in {self.image_dir}")
+
+        return image_paths
+
+    def _apply_window_level(self, image, window_center, window_width):
+        """Apply window level normalization (same as DSRNDataset)"""
+        img_min = window_center - window_width // 2
+        img_max = window_center + window_width // 2
+
+        image = np.clip(image, img_min, img_max)
+        image = (image - img_min) / (img_max - img_min)
+
+        return image.astype(np.float32)
+
+    def _load_and_preprocess(self, image_path):
+        """Load and preprocess image (supports both standard images and DICOM)"""
+        image_path = Path(image_path)
+
+        # Check if DICOM file
+        if image_path.suffix.lower() in ['.dcm', '.dicom']:
+            if not PYDICOM_AVAILABLE:
+                raise ImportError("pydicom is required. Install with: pip install pydicom")
+
+            dcm = pydicom.dcmread(str(image_path))
+            image = dcm.pixel_array.astype(np.float32)
+            image = self._apply_window_level(image, self.window_center, self.window_width)
+        else:
+            image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+
+            if image is None:
+                raise ValueError(f"Failed to load image: {image_path}")
+
+            image = image.astype(np.float32) / 255.0
+
+        # Resize
+        if image.shape[0] != self.image_size or image.shape[1] != self.image_size:
+            image = cv2.resize(image, (self.image_size, self.image_size), interpolation=cv2.INTER_LINEAR)
+
+        return image
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        """
+        Returns:
+            dict with keys:
+                - x_abnormal: [1, H, W] abnormal image (input)
+                - mask_gt: [1, H, W] ground truth mask (if available, else zeros)
+                - image_name: str, filename
+        """
+        # Load abnormal image
+        image_path = self.image_paths[idx]
+        x_abnormal = self._load_and_preprocess(image_path)
+
+        # Load ground truth mask if available
+        if self.has_masks:
+            mask_path = self.mask_dir / image_path.name
+
+            if mask_path.exists():
+                mask_gt = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+
+                if mask_gt is None:
+                    print(f"[Warning] Failed to load mask: {mask_path}, using zeros")
+                    mask_gt = np.zeros_like(x_abnormal)
+                else:
+                    # Resize and normalize
+                    if mask_gt.shape != x_abnormal.shape:
+                        mask_gt = cv2.resize(mask_gt, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
+
+                    mask_gt = (mask_gt > 127).astype(np.float32)  # Binary threshold
+            else:
+                print(f"[Warning] Mask not found for {image_path.name}, using zeros")
+                mask_gt = np.zeros_like(x_abnormal)
+        else:
+            mask_gt = np.zeros_like(x_abnormal)
+
+        # Convert to torch tensors
+        x_abnormal = torch.from_numpy(x_abnormal).unsqueeze(0).float()  # [1, H, W]
+        mask_gt = torch.from_numpy(mask_gt).unsqueeze(0).float()  # [1, H, W]
+
+        return {
+            'x_abnormal': x_abnormal,
+            'mask_gt': mask_gt,
+            'image_name': image_path.name
+        }
+
+
 def create_dataloaders(config):
     """
     Create train and validation dataloaders
