@@ -14,6 +14,10 @@ class DSRNConfig:
     train_ratio: float = 0.9  # For dataset split
     image_size: int = 256
 
+    # DICOM window level normalization
+    window_center: int = 2048
+    window_width: int = 4096
+
     # ===== Model Architecture =====
     base_channels: int = 64
     feature_dims: Tuple[int, int, int, int] = (64, 128, 256, 512)
