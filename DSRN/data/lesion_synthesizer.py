@@ -270,6 +270,77 @@ class DiverseLesionSynthesizer:
 
         return lesion_mask
 
+    def create_shape_multilocular_distinct(self, lesion_mask, cx, cy, size):
+        """
+        다방성 병변 - 경계가 살아있는 형태
+        여러 원/타원이 겹쳐있지만 각각의 경계선이 명확하게 보임
+        """
+        H, W = lesion_mask.shape
+        num_locules = random.randint(3, 6)  # 3~6개의 작은 낭종
+
+        # 각 locule을 개별적으로 저장
+        individual_masks = []
+
+        # 첫 번째 메인 locule
+        main_radius = int(size * 0.35)
+        main_mask = np.zeros_like(lesion_mask)
+        cv2.circle(main_mask, (cx, cy), main_radius, 1, -1)
+        individual_masks.append(main_mask)
+
+        # 추가 locules (메인 주변에 겹치게 배치)
+        for i in range(num_locules - 1):
+            angle = random.uniform(0, 2 * np.pi)
+            # 겹치게 하기 위해 거리를 줄임
+            distance = main_radius * random.uniform(0.4, 0.7)  # 겹침 정도
+
+            locule_cx = int(cx + distance * np.cos(angle))
+            locule_cy = int(cy + distance * np.sin(angle))
+
+            # 크기를 다양하게
+            if random.random() > 0.5:
+                # 원형
+                locule_radius = int(main_radius * random.uniform(0.5, 0.8))
+                locule_mask = np.zeros_like(lesion_mask)
+                cv2.circle(locule_mask, (locule_cx, locule_cy), locule_radius, 1, -1)
+            else:
+                # 타원형
+                aspect = random.uniform(0.6, 1.5)
+                angle_deg = random.randint(0, 180)
+                locule_radius = int(main_radius * random.uniform(0.5, 0.8))
+                locule_mask = np.zeros_like(lesion_mask)
+                cv2.ellipse(locule_mask, (locule_cx, locule_cy),
+                           (locule_radius, int(locule_radius * aspect)),
+                           angle_deg, 0, 360, 1, -1)
+
+            individual_masks.append(locule_mask)
+
+        # 🔥 핵심: 각 locule의 경계를 살리면서 합치기
+        # 방법: 각 locule에 서로 다른 강도를 주고, max로 합치면 경계가 보임
+
+        combined_mask = np.zeros_like(lesion_mask)
+
+        for i, mask in enumerate(individual_masks):
+            # 각 locule을 약간씩 blur (경계는 살리면서 자연스럽게)
+            soft_mask = gaussian_filter(mask.astype(np.float32), sigma=0.8)
+
+            # 경계 강조를 위해 각 locule마다 약간씩 다른 값 부여
+            # 겹친 부분에서 경계가 보이도록
+            intensity = 0.7 + (i % 3) * 0.1  # 0.7, 0.8, 0.9 교대로
+
+            combined_mask = np.maximum(combined_mask, soft_mask * intensity)
+
+        # 최종 마스크 정규화
+        if combined_mask.max() > 0:
+            combined_mask = combined_mask / combined_mask.max()
+
+        # 약간의 threshold로 경계를 더 명확하게
+        combined_mask = (combined_mask > 0.3).astype(np.float32)
+
+        # 매우 약한 blur만 적용 (경계는 유지)
+        combined_mask = gaussian_filter(combined_mask, sigma=0.5)
+
+        return combined_mask
+
     def synthesize_radiolucent_diverse(self, image, lesion_mask, lesion_info):
         """다양한 형태의 투과성 병변"""
         config = self.config['radiolucent']
@@ -361,7 +432,13 @@ class DiverseLesionSynthesizer:
     def create_lesion_mask(self, roi_mask, lesion_type='radiolucent'):
         """
         🔥 다양한 형태의 병변 마스크 생성
-        - 원, 타원, 불규칙한원, 불규칙한타원, 눈물모양, 포도송이모양
+        - circle: 원형
+        - ellipse: 타원형
+        - irregular_circle: 불규칙한 원형
+        - irregular_ellipse: 불규칙한 타원형
+        - teardrop: 눈물 방울 모양
+        - grape_cluster: 포도송이 (경계 흐림)
+        - multilocular_distinct: 다방성 (경계 선명) 🔥NEW
         """
         H, W = roi_mask.shape
         dist_map = distance_transform_edt(roi_mask)
@@ -382,7 +459,8 @@ class DiverseLesionSynthesizer:
             'irregular_circle',
             'irregular_ellipse',
             'teardrop',
-            'grape_cluster'
+            'grape_cluster',
+            'multilocular_distinct'  # 🔥 경계가 살아있는 다방성
         ]
 
         for attempts in range(50):
@@ -408,6 +486,8 @@ class DiverseLesionSynthesizer:
                 lesion_mask = self.create_shape_teardrop(lesion_mask, cx, cy, size)
             elif shape == 'grape_cluster':
                 lesion_mask = self.create_shape_grape_cluster(lesion_mask, cx, cy, size)
+            elif shape == 'multilocular_distinct':
+                lesion_mask = self.create_shape_multilocular_distinct(lesion_mask, cx, cy, size)
 
             lesion_mask = lesion_mask * roi_mask
 
