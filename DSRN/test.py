@@ -244,6 +244,14 @@ class DSRNTester:
             # Forward - model automatically detects anomalies
             x_recon, anomaly_map, fusion_weights = self.model(x_abnormal)
 
+            # Debug: Print anomaly map statistics
+            if idx == 0:
+                print(f"\n[Debug] First image anomaly map stats:")
+                print(f"  Min: {anomaly_map.min().item():.4f}")
+                print(f"  Max: {anomaly_map.max().item():.4f}")
+                print(f"  Mean: {anomaly_map.mean().item():.4f}")
+                print(f"  Std: {anomaly_map.std().item():.4f}")
+
             # Compute residual
             residual = torch.abs(x_abnormal - x_recon)
 
@@ -448,6 +456,53 @@ def main():
         # Compute metrics if masks are available
         if args.has_masks:
             tester.compute_metrics_abnormal(abnormal_dataset)
+
+        # Also run a quick sanity check with synthetic lesions
+        print("\n" + "=" * 50)
+        print("Sanity Check: Testing on 5 synthetic lesions")
+        print("=" * 50)
+        from torch.utils.data import Subset
+        test_dataset_synthetic = DSRNDataset(
+            data_root=config.data_root,
+            image_size=config.image_size,
+            lesion_prob=1.0  # Always add lesion
+        )
+        # Take first 5 samples
+        synthetic_subset = Subset(test_dataset_synthetic, range(min(5, len(test_dataset_synthetic))))
+        tester.test_dataset(synthetic_subset, num_samples=3)
+
+        # Compute metrics on synthetic
+        print("\nComputing metrics on synthetic lesions...")
+        from torch.utils.data import DataLoader
+        synthetic_loader = DataLoader(synthetic_subset, batch_size=1, shuffle=False)
+
+        total_iou = 0
+        count = 0
+        for batch in synthetic_loader:
+            x_lesion = batch['x_lesion'].to(tester.device)
+            mask_lesion = batch['mask_lesion'].to(tester.device)
+
+            _, anomaly_map, _ = tester.model(x_lesion)
+
+            if mask_lesion.sum() > 0:
+                anomaly_pred = (anomaly_map > 0.5).float()
+                intersection = (anomaly_pred * mask_lesion).sum()
+                union = anomaly_pred.sum() + mask_lesion.sum() - intersection
+                iou = (intersection / (union + 1e-8)).item()
+                total_iou += iou
+                count += 1
+
+        avg_iou = total_iou / max(count, 1)
+        print(f"\nSynthetic lesion detection IoU: {avg_iou:.4f}")
+        print(f"Expected: >0.5 (good), 0.3-0.5 (fair), <0.3 (poor detection)")
+
+        if avg_iou < 0.3:
+            print("\n⚠️  WARNING: Model is NOT detecting synthetic lesions properly!")
+            print("This suggests anomaly detection was not trained correctly.")
+            print("Possible causes:")
+            print("  1. lambda_anomaly too low (currently 0.1)")
+            print("  2. Training stopped too early during warm-up phase")
+            print("  3. Anomaly scorer initialization issue")
 
 
 if __name__ == "__main__":
