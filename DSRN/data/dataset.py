@@ -225,14 +225,20 @@ class AbnormalDataset(Dataset):
     - 모델이 알아서 병변 위치를 찾고 재구성
     - Ground truth mask는 optional (평가용)
 
-    Directory structure:
+    Directory structure (Option 1 - with subdirectories):
         data_root/
             images/
-                abnormal_001.png
-                abnormal_002.png
+                abnormal_001.dcm
+                abnormal_002.dcm
             masks/ (optional)
                 abnormal_001.png
                 abnormal_002.png
+
+    Directory structure (Option 2 - direct files):
+        data_root/
+            abnormal_001.dcm
+            abnormal_002.dcm
+            (no masks in this mode)
     """
 
     def __init__(self, data_root, image_size=256, has_masks=False,
@@ -252,13 +258,23 @@ class AbnormalDataset(Dataset):
         self.window_width = window_width
 
         # Image and mask directories
-        self.image_dir = self.data_root / 'images'
-        self.mask_dir = self.data_root / 'masks' if has_masks else None
+        # Try 'images' subdirectory first, fallback to data_root if not found
+        images_subdir = self.data_root / 'images'
+        if images_subdir.exists():
+            self.image_dir = images_subdir
+            self.mask_dir = self.data_root / 'masks' if has_masks else None
+        else:
+            # Images are directly in data_root
+            self.image_dir = self.data_root
+            self.mask_dir = None
+            if has_masks:
+                print("[Warning] has_masks=True but no 'images' subdirectory found. Masks not supported in this mode.")
+                self.has_masks = False
 
         if not self.image_dir.exists():
             raise ValueError(f"Image directory not found: {self.image_dir}")
 
-        if has_masks and not self.mask_dir.exists():
+        if has_masks and self.mask_dir and not self.mask_dir.exists():
             raise ValueError(f"Mask directory not found: {self.mask_dir}")
 
         # Load image paths
