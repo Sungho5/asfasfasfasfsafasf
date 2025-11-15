@@ -65,7 +65,7 @@ class DSRNTrainer:
         print("[Trainer] Initialized with Enhanced Loss Functions")
 
     def register_sobel_filters(self):
-        """Register Sobel filters as buffers"""
+        """Register Sobel filters as buffers (for first channel only)"""
         sobel_x = torch.tensor(
             [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
             dtype=torch.float32
@@ -84,11 +84,11 @@ class DSRNTrainer:
         Compute all losses with enhanced components
 
         Args:
-            x_normal: [B, 1, H, W] ground truth (original)
-            x_lesion: [B, 1, H, W] input (with synthetic lesion)
-            mask_lesion: [B, 1, H, W] lesion mask
-            x_recon: [B, 1, H, W] reconstructed output
-            anomaly_map: [B, 1, H, W] predicted anomaly map
+            x_normal: [B, C, H, W] ground truth (original) - C=3: [original, clahe, gradient]
+            x_lesion: [B, C, H, W] input (with synthetic lesion) - C=3
+            mask_lesion: [B, 1, H, W] lesion mask (single channel)
+            x_recon: [B, C, H, W] reconstructed output - C=3
+            anomaly_map: [B, 1, H, W] predicted anomaly map (single channel)
             epoch: Current epoch (for warm-up)
 
         Returns:
@@ -171,11 +171,14 @@ class DSRNTrainer:
         # ============================================
         # 4. Perceptual Loss (Gradient Domain)
         # ============================================
-        # Sobel filters for edge detection
-        grad_recon_x = F.conv2d(x_recon, self.sobel_x, padding=1)
-        grad_recon_y = F.conv2d(x_recon, self.sobel_y, padding=1)
-        grad_normal_x = F.conv2d(x_normal, self.sobel_x, padding=1)
-        grad_normal_y = F.conv2d(x_normal, self.sobel_y, padding=1)
+        # Sobel filters for edge detection (apply to first channel - original image only)
+        x_recon_ch0 = x_recon[:, 0:1]  # [B, 1, H, W]
+        x_normal_ch0 = x_normal[:, 0:1]  # [B, 1, H, W]
+
+        grad_recon_x = F.conv2d(x_recon_ch0, self.sobel_x, padding=1)
+        grad_recon_y = F.conv2d(x_recon_ch0, self.sobel_y, padding=1)
+        grad_normal_x = F.conv2d(x_normal_ch0, self.sobel_x, padding=1)
+        grad_normal_y = F.conv2d(x_normal_ch0, self.sobel_y, padding=1)
 
         loss_perceptual = (
             F.l1_loss(grad_recon_x, grad_normal_x) +
@@ -229,8 +232,8 @@ class DSRNTrainer:
         pbar = tqdm(self.train_loader, desc=f'Epoch {epoch}/{self.config.num_epochs}')
 
         for batch_idx, batch in enumerate(pbar):
-            x_normal = batch['x_normal'].to(self.device)  # [B, 1, H, W]
-            x_lesion = batch['x_lesion'].to(self.device)  # [B, 1, H, W]
+            x_normal = batch['x_normal'].to(self.device)  # [B, C, H, W] C=3: [original, clahe, gradient]
+            x_lesion = batch['x_lesion'].to(self.device)  # [B, C, H, W] C=3
             mask_lesion = batch['mask_lesion'].to(self.device)  # [B, 1, H, W]
 
             # Phase 1: Update prototypes with normal images (no lesion)
@@ -298,9 +301,9 @@ class DSRNTrainer:
         pbar = tqdm(self.val_loader, desc='Validation')
 
         for batch in pbar:
-            x_normal = batch['x_normal'].to(self.device)
-            x_lesion = batch['x_lesion'].to(self.device)
-            mask_lesion = batch['mask_lesion'].to(self.device)
+            x_normal = batch['x_normal'].to(self.device)  # [B, C, H, W] C=3
+            x_lesion = batch['x_lesion'].to(self.device)  # [B, C, H, W] C=3
+            mask_lesion = batch['mask_lesion'].to(self.device)  # [B, 1, H, W]
 
             # Forward
             x_recon, anomaly_map, fusion_weights = self.model(x_lesion)
@@ -455,9 +458,9 @@ class DSRNTrainer:
 
         # Get one batch
         batch = next(iter(self.val_loader))
-        x_normal = batch['x_normal'].to(self.device)
-        x_lesion = batch['x_lesion'].to(self.device)
-        mask_lesion = batch['mask_lesion'].to(self.device)
+        x_normal = batch['x_normal'].to(self.device)  # [B, C, H, W] C=3
+        x_lesion = batch['x_lesion'].to(self.device)  # [B, C, H, W] C=3
+        mask_lesion = batch['mask_lesion'].to(self.device)  # [B, 1, H, W]
 
         # Forward
         x_recon, anomaly_map, fusion_weights = self.model(x_lesion)
