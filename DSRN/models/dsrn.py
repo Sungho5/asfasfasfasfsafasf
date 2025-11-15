@@ -26,26 +26,30 @@ class DSRN(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        # Components
+        # Feature extractor with multi-channel input support
         self.feature_extractor = FeatureExtractor(
-            in_channels=config.input_channels,  # Now supports multi-channel input
+            in_channels=config.input_channels,  # Supports 3 channels: [original, CLAHE, gradient]
             base_channels=config.base_channels
         )
 
+        # Anomaly scorer
         self.anomaly_scorer = SpatialAnomalyScorer(
             num_prototypes=config.num_prototypes,
             feature_dim=config.feature_dim
         )
 
+        # Normal stream with multi-channel support
         self.normal_stream = NormalStream(
             in_channels=config.input_channels,
             alpha=config.normal_alpha
         )
 
+        # Abnormal stream with multi-channel support
         self.abnormal_stream = AbnormalStream(
             in_channels=config.input_channels
         )
 
+        # Soft fusion
         self.fusion = SoftFusion()
 
         # Count parameters
@@ -114,15 +118,17 @@ if __name__ == "__main__":
 
     @dataclass
     class TestConfig:
+        input_channels: int = 3
         base_channels: int = 64
         num_prototypes: int = 1000
         feature_dim: int = 512
+        normal_alpha: float = 0.05
 
     config = TestConfig()
     model = DSRN(config)
 
-    # Dummy input
-    x = torch.randn(2, 1, 256, 256)
+    # Dummy input (3 channels)
+    x = torch.randn(2, 3, 256, 256)
 
     # Forward
     x_fused, anomaly_map, fusion_weights = model(x)
