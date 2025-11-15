@@ -21,6 +21,90 @@ except ImportError:
 from .lesion_synthesizer import DiverseLesionSynthesizer
 
 
+def apply_clahe(image, clip_limit=2.0, tile_size=8):
+    """
+    Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    Enhances local texture and subtle patterns
+
+    Args:
+        image: [H, W] numpy array in [0, 1]
+        clip_limit: Threshold for contrast limiting
+        tile_size: Size of grid for histogram equalization
+
+    Returns:
+        clahe_image: [H, W] numpy array in [0, 1]
+    """
+    # Convert to uint8 for CLAHE
+    img_uint8 = (image * 255).astype(np.uint8)
+
+    # Create CLAHE object
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile_size, tile_size))
+
+    # Apply CLAHE
+    clahe_img = clahe.apply(img_uint8)
+
+    # Convert back to [0, 1]
+    return clahe_img.astype(np.float32) / 255.0
+
+
+def compute_morphology_gradient(image, kernel_size=3):
+    """
+    Compute morphology gradient map
+    Captures structural edges and boundaries (bone erosion, shape changes)
+
+    gradient = dilation - erosion
+
+    Args:
+        image: [H, W] numpy array in [0, 1]
+        kernel_size: Size of morphological structuring element
+
+    Returns:
+        gradient: [H, W] numpy array in [0, 1]
+    """
+    # Convert to uint8
+    img_uint8 = (image * 255).astype(np.uint8)
+
+    # Create structuring element
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+
+    # Morphological gradient
+    gradient = cv2.morphologyEx(img_uint8, cv2.MORPH_GRADIENT, kernel)
+
+    # Normalize to [0, 1]
+    return gradient.astype(np.float32) / 255.0
+
+
+def create_multichannel_input(image, use_clahe=True, use_gradient=True,
+                               clahe_clip_limit=2.0, clahe_tile_size=8):
+    """
+    Create multi-channel input: [original, clahe, gradient]
+
+    Args:
+        image: [H, W] numpy array in [0, 1]
+        use_clahe: Whether to include CLAHE channel
+        use_gradient: Whether to include gradient channel
+        clahe_clip_limit: CLAHE clip limit
+        clahe_tile_size: CLAHE tile size
+
+    Returns:
+        multi_channel: [C, H, W] numpy array, C = 1~3
+    """
+    channels = [image]  # Always include original
+
+    if use_clahe:
+        clahe_img = apply_clahe(image, clip_limit=clahe_clip_limit, tile_size=clahe_tile_size)
+        channels.append(clahe_img)
+
+    if use_gradient:
+        gradient = compute_morphology_gradient(image, kernel_size=3)
+        channels.append(gradient)
+
+    # Stack channels: [C, H, W]
+    multi_channel = np.stack(channels, axis=0)
+
+    return multi_channel
+
+
 class DSRNDataset(Dataset):
     """
     DSRN Dataset with Synthetic Lesions
@@ -30,7 +114,9 @@ class DSRNDataset(Dataset):
     """
 
     def __init__(self, data_root, image_size=256, train=True, lesion_prob=0.8,
-                 window_center=2048, window_width=4096):
+                 window_center=2048, window_width=4096,
+                 use_clahe=True, use_gradient=True,
+                 clahe_clip_limit=2.0, clahe_tile_size=8):
         """
         Args:
             data_root: Root directory containing normal X-ray images
@@ -39,6 +125,10 @@ class DSRNDataset(Dataset):
             lesion_prob: Probability of adding lesion
             window_center: Window level center for DICOM normalization (default: 2048)
             window_width: Window level width for DICOM normalization (default: 4096)
+            use_clahe: Use CLAHE for texture enhancement (default: True)
+            use_gradient: Use morphology gradient for structure (default: True)
+            clahe_clip_limit: CLAHE clip limit (default: 2.0)
+            clahe_tile_size: CLAHE tile grid size (default: 8)
         """
         self.data_root = Path(data_root)
         self.image_size = image_size
@@ -48,6 +138,19 @@ class DSRNDataset(Dataset):
         # Window level parameters for DICOM
         self.window_center = window_center
         self.window_width = window_width
+
+        # Multi-channel input parameters
+        self.use_clahe = use_clahe
+        self.use_gradient = use_gradient
+        self.clahe_clip_limit = clahe_clip_limit
+        self.clahe_tile_size = clahe_tile_size
+
+        # Determine number of input channels
+        self.input_channels = 1  # original
+        if use_clahe:
+            self.input_channels += 1
+        if use_gradient:
+            self.input_channels += 1
 
         # Lesion synthesizer
         self.lesion_synthesizer = DiverseLesionSynthesizer()
@@ -59,6 +162,7 @@ class DSRNDataset(Dataset):
         print(f"[DSRNDataset] Mode: {'Train' if train else 'Val'}")
         print(f"[DSRNDataset] Lesion probability: {lesion_prob}")
         print(f"[DSRNDataset] Window level: center={window_center}, width={window_width}")
+        print(f"[DSRNDataset] Multi-channel: CLAHE={use_clahe}, Gradient={use_gradient} → {self.input_channels} channels")
 
     def _load_image_paths(self):
         """Load all image paths"""
@@ -171,49 +275,66 @@ class DSRNDataset(Dataset):
         """
         Returns:
             dict with keys:
-                - x_normal: [1, H, W] original normal image
-                - x_lesion: [1, H, W] image with synthetic lesion
+                - x_normal: [C, H, W] multi-channel normal image
+                - x_lesion: [C, H, W] multi-channel image with synthetic lesion
                 - mask_lesion: [1, H, W] lesion mask
         """
-        # Load normal image
+        # Load normal image (grayscale)
         image_path = self.image_paths[idx]
-        x_normal = self._load_and_preprocess(image_path)
+        x_normal_gray = self._load_and_preprocess(image_path)
 
         # Ensure x_normal is 2D
-        if x_normal.ndim != 2:
-            raise ValueError(f"Image should be 2D, got shape {x_normal.shape}")
+        if x_normal_gray.ndim != 2:
+            raise ValueError(f"Image should be 2D, got shape {x_normal_gray.shape}")
 
         # Add synthetic lesion with probability
         if random.random() < self.lesion_prob:
             # Create ROI mask
-            roi_mask = self._create_roi_mask(x_normal)
+            roi_mask = self._create_roi_mask(x_normal_gray)
 
-            # Synthesize lesion
+            # Synthesize lesion (operates on grayscale image)
             try:
-                x_lesion, mask_lesion, _, _ = self.lesion_synthesizer.synthesize(
-                    x_normal.copy(),
+                x_lesion_gray, mask_lesion, _, _ = self.lesion_synthesizer.synthesize(
+                    x_normal_gray.copy(),
                     roi_mask,
                     lesion_type='random'  # random, radiolucent, mixed
                 )
             except Exception as e:
                 # If synthesis fails, use original without lesion
                 print(f"[Warning] Lesion synthesis failed for {image_path}: {e}")
-                x_lesion = x_normal.copy()
-                mask_lesion = np.zeros_like(x_normal)
+                x_lesion_gray = x_normal_gray.copy()
+                mask_lesion = np.zeros_like(x_normal_gray)
         else:
             # No lesion (for prototype learning)
-            x_lesion = x_normal.copy()
-            mask_lesion = np.zeros_like(x_normal)
+            x_lesion_gray = x_normal_gray.copy()
+            mask_lesion = np.zeros_like(x_normal_gray)
 
-        # Convert to torch tensors and add channel dimension
-        x_normal = torch.from_numpy(x_normal).unsqueeze(0).float()  # [1, H, W]
-        x_lesion = torch.from_numpy(x_lesion).unsqueeze(0).float()  # [1, H, W]
+        # Create multi-channel inputs
+        x_normal_multi = create_multichannel_input(
+            x_normal_gray,
+            use_clahe=self.use_clahe,
+            use_gradient=self.use_gradient,
+            clahe_clip_limit=self.clahe_clip_limit,
+            clahe_tile_size=self.clahe_tile_size
+        )  # [C, H, W]
+
+        x_lesion_multi = create_multichannel_input(
+            x_lesion_gray,
+            use_clahe=self.use_clahe,
+            use_gradient=self.use_gradient,
+            clahe_clip_limit=self.clahe_clip_limit,
+            clahe_tile_size=self.clahe_tile_size
+        )  # [C, H, W]
+
+        # Convert to torch tensors
+        x_normal = torch.from_numpy(x_normal_multi).float()  # [C, H, W]
+        x_lesion = torch.from_numpy(x_lesion_multi).float()  # [C, H, W]
         mask_lesion = torch.from_numpy(mask_lesion).unsqueeze(0).float()  # [1, H, W]
 
         return {
-            'x_normal': x_normal,      # Ground truth (original)
-            'x_lesion': x_lesion,      # Input (with synthetic lesion)
-            'mask_lesion': mask_lesion, # Lesion location
+            'x_normal': x_normal,      # Ground truth (original) [C, H, W]
+            'x_lesion': x_lesion,      # Input (with synthetic lesion) [C, H, W]
+            'mask_lesion': mask_lesion, # Lesion location [1, H, W]
         }
 
 
@@ -242,7 +363,9 @@ class AbnormalDataset(Dataset):
     """
 
     def __init__(self, data_root, image_size=256, has_masks=False,
-                 window_center=2048, window_width=4096):
+                 window_center=2048, window_width=4096,
+                 use_clahe=True, use_gradient=True,
+                 clahe_clip_limit=2.0, clahe_tile_size=8):
         """
         Args:
             data_root: Root directory containing abnormal images
@@ -250,12 +373,22 @@ class AbnormalDataset(Dataset):
             has_masks: Whether ground truth masks are available
             window_center: Window level center for DICOM
             window_width: Window level width for DICOM
+            use_clahe: Use CLAHE for texture enhancement
+            use_gradient: Use morphology gradient for structure
+            clahe_clip_limit: CLAHE clip limit
+            clahe_tile_size: CLAHE tile size
         """
         self.data_root = Path(data_root)
         self.image_size = image_size
         self.has_masks = has_masks
         self.window_center = window_center
         self.window_width = window_width
+
+        # Multi-channel parameters
+        self.use_clahe = use_clahe
+        self.use_gradient = use_gradient
+        self.clahe_clip_limit = clahe_clip_limit
+        self.clahe_tile_size = clahe_tile_size
 
         # Image and mask directories
         # Try 'images' subdirectory first, fallback to data_root if not found
@@ -342,13 +475,13 @@ class AbnormalDataset(Dataset):
         """
         Returns:
             dict with keys:
-                - x_abnormal: [1, H, W] abnormal image (input)
+                - x_abnormal: [C, H, W] multi-channel abnormal image (input)
                 - mask_gt: [1, H, W] ground truth mask (if available, else zeros)
                 - image_name: str, filename
         """
-        # Load abnormal image
+        # Load abnormal image (grayscale)
         image_path = self.image_paths[idx]
-        x_abnormal = self._load_and_preprocess(image_path)
+        x_abnormal_gray = self._load_and_preprocess(image_path)
 
         # Load ground truth mask if available
         if self.has_masks:
@@ -359,25 +492,34 @@ class AbnormalDataset(Dataset):
 
                 if mask_gt is None:
                     print(f"[Warning] Failed to load mask: {mask_path}, using zeros")
-                    mask_gt = np.zeros_like(x_abnormal)
+                    mask_gt = np.zeros_like(x_abnormal_gray)
                 else:
                     # Resize and normalize
-                    if mask_gt.shape != x_abnormal.shape:
+                    if mask_gt.shape != x_abnormal_gray.shape:
                         mask_gt = cv2.resize(mask_gt, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
 
                     mask_gt = (mask_gt > 127).astype(np.float32)  # Binary threshold
             else:
                 print(f"[Warning] Mask not found for {image_path.name}, using zeros")
-                mask_gt = np.zeros_like(x_abnormal)
+                mask_gt = np.zeros_like(x_abnormal_gray)
         else:
-            mask_gt = np.zeros_like(x_abnormal)
+            mask_gt = np.zeros_like(x_abnormal_gray)
+
+        # Create multi-channel input
+        x_abnormal_multi = create_multichannel_input(
+            x_abnormal_gray,
+            use_clahe=self.use_clahe,
+            use_gradient=self.use_gradient,
+            clahe_clip_limit=self.clahe_clip_limit,
+            clahe_tile_size=self.clahe_tile_size
+        )  # [C, H, W]
 
         # Convert to torch tensors
-        x_abnormal = torch.from_numpy(x_abnormal).unsqueeze(0).float()  # [1, H, W]
+        x_abnormal = torch.from_numpy(x_abnormal_multi).float()  # [C, H, W]
         mask_gt = torch.from_numpy(mask_gt).unsqueeze(0).float()  # [1, H, W]
 
         return {
-            'x_abnormal': x_abnormal,
+            'x_abnormal': x_abnormal,  # [C, H, W]
             'mask_gt': mask_gt,
             'image_name': image_path.name
         }
@@ -402,7 +544,11 @@ def create_dataloaders(config):
         train=True,
         lesion_prob=config.lesion_prob,
         window_center=config.window_center,
-        window_width=config.window_width
+        window_width=config.window_width,
+        use_clahe=config.use_clahe,
+        use_gradient=config.use_gradient,
+        clahe_clip_limit=config.clahe_clip_limit,
+        clahe_tile_size=config.clahe_tile_size
     )
 
     # Split train/val

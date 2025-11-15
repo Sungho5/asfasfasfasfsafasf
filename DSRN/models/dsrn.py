@@ -28,7 +28,7 @@ class DSRN(nn.Module):
 
         # Components
         self.feature_extractor = FeatureExtractor(
-            in_channels=1,
+            in_channels=config.input_channels,  # Now supports multi-channel input
             base_channels=config.base_channels
         )
 
@@ -37,9 +37,14 @@ class DSRN(nn.Module):
             feature_dim=config.feature_dim
         )
 
-        self.normal_stream = NormalStream(alpha=0.05)
+        self.normal_stream = NormalStream(
+            in_channels=config.input_channels,
+            alpha=config.normal_alpha
+        )
 
-        self.abnormal_stream = AbnormalStream()
+        self.abnormal_stream = AbnormalStream(
+            in_channels=config.input_channels
+        )
 
         self.fusion = SoftFusion()
 

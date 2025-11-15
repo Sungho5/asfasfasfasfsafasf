@@ -13,30 +13,30 @@ class NormalStream(nn.Module):
     약간의 refinement만 수행
     """
 
-    def __init__(self, alpha=0.05):
+    def __init__(self, in_channels=1, alpha=0.05):
         super().__init__()
 
         # Minimal processing (거의 identity)
         self.refine = nn.Sequential(
-            nn.Conv2d(1, 32, 3, 1, 1),
+            nn.Conv2d(in_channels, 32, 3, 1, 1),
             nn.ReLU(inplace=True),
             nn.Conv2d(32, 32, 3, 1, 1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(32, 1, 3, 1, 1),
+            nn.Conv2d(32, in_channels, 3, 1, 1),
         )
 
         # Residual connection 강제 (very small alpha)
         self.alpha = nn.Parameter(torch.tensor(alpha))
 
-        print(f"[NormalStream] Created with alpha={alpha}")
+        print(f"[NormalStream] Created with in_channels={in_channels}, alpha={alpha}")
 
     def forward(self, x):
         """
         Args:
-            x: [B, 1, 256, 256]
+            x: [B, C, 256, 256]
 
         Returns:
-            x_normal: [B, 1, 256, 256] (거의 x와 동일)
+            x_normal: [B, C, 256, 256] (거의 x와 동일)
         """
         residual = self.refine(x)
         x_normal = x + self.alpha * residual

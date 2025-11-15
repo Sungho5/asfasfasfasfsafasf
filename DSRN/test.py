@@ -13,8 +13,9 @@ import argparse
 
 from config import DSRNConfig
 from models.dsrn import DSRN
-from data.dataset import DSRNDataset, AbnormalDataset
+from data.dataset import DSRNDataset, AbnormalDataset, create_multichannel_input
 from utils.visualization import visualize_results, save_comparison
+import torch.nn.functional as F
 
 
 class DSRNTester:
@@ -244,8 +245,8 @@ class DSRNTester:
             # Forward - model automatically detects anomalies
             x_recon, anomaly_map, fusion_weights = self.model(x_abnormal)
 
-            # Compute residual
-            residual = torch.abs(x_abnormal - x_recon)
+            # Compute residual (only on first channel - original image)
+            residual = torch.abs(x_abnormal[:, 0:1] - x_recon[:, 0:1])
 
             # Residual-guided anomaly map (더 정확한 병변 탐지)
             # Residual이 높은 곳 = 재구성 실패 = 병변 가능성 높음
@@ -278,6 +279,7 @@ class DSRNTester:
             fig, axes = plt.subplots(2, 4, figsize=(20, 10))
 
             # Row 1: Input, Reconstruction, Residual, Combined Anomaly
+            # Show only first channel (original image)
             axes[0, 0].imshow(x_abnormal.detach().cpu().numpy()[0, 0], cmap='gray')
             axes[0, 0].set_title('Input (Abnormal)', fontsize=12)
             axes[0, 0].axis('off')
@@ -359,7 +361,8 @@ class DSRNTester:
             x_recon, anomaly_map, _ = self.model(x_abnormal)
 
             # Compute residual-guided anomaly map (same as test_abnormal_dataset)
-            residual = torch.abs(x_abnormal - x_recon)
+            # Only use first channel (original image)
+            residual = torch.abs(x_abnormal[:, 0:1] - x_recon[:, 0:1])
             residual_score = F.interpolate(
                 residual,
                 size=(256, 256),
@@ -482,7 +485,11 @@ def main():
             image_size=config.image_size,
             has_masks=args.has_masks,
             window_center=config.window_center,
-            window_width=config.window_width
+            window_width=config.window_width,
+            use_clahe=config.use_clahe,
+            use_gradient=config.use_gradient,
+            clahe_clip_limit=config.clahe_clip_limit,
+            clahe_tile_size=config.clahe_tile_size
         )
 
         # Test on abnormal images

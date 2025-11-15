@@ -76,12 +76,15 @@ class AbnormalStream(nn.Module):
     핵심: 주변 정상 context를 활용한 생성
     """
 
-    def __init__(self):
+    def __init__(self, in_channels=1):
         super().__init__()
 
+        self.in_channels = in_channels
+
         # Context encoder (주변 정상 영역 분석)
+        # input channels + anomaly_map (1 channel)
         self.context_encoder = nn.Sequential(
-            nn.Conv2d(2, 64, 7, 1, 3),  # input + anomaly_map
+            nn.Conv2d(in_channels + 1, 64, 7, 1, 3),  # input + anomaly_map
             nn.GroupNorm(8, 64),
             nn.ReLU(inplace=True),
             nn.Conv2d(64, 128, 5, 1, 2),
@@ -116,23 +119,23 @@ class AbnormalStream(nn.Module):
             nn.Conv2d(128, 64, 3, 1, 1),
             nn.GroupNorm(8, 64),
             nn.ReLU(inplace=True),
-            nn.Conv2d(64, 1, 3, 1, 1),
+            nn.Conv2d(64, in_channels, 3, 1, 1),  # Output same channels as input
         )
 
-        print("[AbnormalStream] Created")
+        print(f"[AbnormalStream] Created with in_channels={in_channels}")
 
     def forward(self, x, anomaly_map, normal_prototypes):
         """
         Args:
-            x: [B, 1, 256, 256] input
+            x: [B, C, 256, 256] input (C = input_channels)
             anomaly_map: [B, 1, 256, 256] where to reconstruct
             normal_prototypes: [N, 512] 정상 texture features
 
         Returns:
-            x_recon: [B, 1, 256, 256] perfectly reconstructed
+            x_recon: [B, C, 256, 256] perfectly reconstructed
         """
         # Concatenate input with anomaly map
-        x_with_mask = torch.cat([x, anomaly_map], dim=1)  # [B, 2, 256, 256]
+        x_with_mask = torch.cat([x, anomaly_map], dim=1)  # [B, C+1, 256, 256]
 
         # Encode context (정상 영역 정보)
         context = self.context_encoder(x_with_mask)  # [B, 256, 256, 256]

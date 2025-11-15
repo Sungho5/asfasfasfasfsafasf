@@ -18,6 +18,13 @@ class DSRNConfig:
     window_center: int = 2048
     window_width: int = 4096
 
+    # Multi-channel input (texture + structure)
+    use_clahe: bool = True  # CLAHE for texture enhancement
+    use_gradient: bool = True  # Morphology gradient for structure
+    input_channels: int = 3  # [original, clahe, gradient]
+    clahe_clip_limit: float = 2.0
+    clahe_tile_size: int = 8
+
     # ===== Model Architecture =====
     base_channels: int = 64
     feature_dims: Tuple[int, int, int, int] = (64, 128, 256, 512)
