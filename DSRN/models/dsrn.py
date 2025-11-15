@@ -55,6 +55,7 @@ class DSRN(nn.Module):
         print("=" * 70)
         print("[DSRN] Dual-Stream Selective Reconstruction Network")
         print("=" * 70)
+        print(f"Input channels:        {config.input_channels} [original, CLAHE, gradient]")
         print(f"Total parameters:      {total_params:,}")
         print(f"Trainable parameters:  {trainable_params:,}")
         print("=" * 70)
@@ -62,10 +63,11 @@ class DSRN(nn.Module):
     def forward(self, x):
         """
         Args:
-            x: [B, 1, 256, 256] input panorama
+            x: [B, C, 256, 256] multi-channel input
+               C=3: [original, CLAHE, gradient]
 
         Returns:
-            x_fused: [B, 1, 256, 256] normalized output
+            x_fused: [B, C, 256, 256] reconstructed output
             anomaly_map: [B, 1, 256, 256] detection map
             fusion_weights: [B, 1, 256, 256] how much each stream contributes
         """
@@ -99,7 +101,7 @@ class DSRN(nn.Module):
         Update normal prototypes with normal images
 
         Args:
-            x_normal: [B, 1, 256, 256] normal images
+            x_normal: [B, C, 256, 256] normal multi-channel images
         """
         with torch.no_grad():
             features = self.feature_extractor(x_normal)
