@@ -75,28 +75,39 @@ def compute_morphology_gradient(image, kernel_size=3):
 
 
 def create_multichannel_input(image, use_clahe=True, use_gradient=True,
-                               clahe_clip_limit=2.0, clahe_tile_size=8):
+                               clahe_clip_limit=2.0, clahe_tile_size=8,
+                               gradient_kernel_size=3):
     """
-    Create multi-channel input: [original, clahe, gradient]
+    Create multi-channel input: [original, clahe+gradient]
+
+    Channel 0: Original normalized image
+    Channel 1: CLAHE → Morphology Gradient (texture + structure)
 
     Args:
         image: [H, W] numpy array in [0, 1]
-        use_clahe: Whether to include CLAHE channel
-        use_gradient: Whether to include gradient channel
+        use_clahe: Whether to apply CLAHE before gradient
+        use_gradient: Whether to compute gradient
         clahe_clip_limit: CLAHE clip limit
         clahe_tile_size: CLAHE tile size
+        gradient_kernel_size: Gradient kernel size
 
     Returns:
-        multi_channel: [C, H, W] numpy array, C = 1~3
+        multi_channel: [C, H, W] numpy array, C = 2 [original, clahe+gradient]
     """
-    channels = [image]  # Always include original
+    channels = [image]  # Channel 0: Original
 
-    if use_clahe:
+    # Channel 1: Apply CLAHE first, then compute gradient on CLAHE result
+    if use_clahe and use_gradient:
+        clahe_img = apply_clahe(image, clip_limit=clahe_clip_limit, tile_size=clahe_tile_size)
+        gradient = compute_morphology_gradient(clahe_img, kernel_size=gradient_kernel_size)
+        channels.append(gradient)
+    elif use_clahe:
+        # Only CLAHE, no gradient
         clahe_img = apply_clahe(image, clip_limit=clahe_clip_limit, tile_size=clahe_tile_size)
         channels.append(clahe_img)
-
-    if use_gradient:
-        gradient = compute_morphology_gradient(image, kernel_size=3)
+    elif use_gradient:
+        # Only gradient on original
+        gradient = compute_morphology_gradient(image, kernel_size=gradient_kernel_size)
         channels.append(gradient)
 
     # Stack channels: [C, H, W]
@@ -116,7 +127,8 @@ class DSRNDataset(Dataset):
     def __init__(self, data_root, image_size=256, train=True, lesion_prob=0.8,
                  window_center=2048, window_width=4096,
                  use_clahe=True, use_gradient=True,
-                 clahe_clip_limit=2.0, clahe_tile_size=8):
+                 clahe_clip_limit=2.0, clahe_tile_size=8,
+                 gradient_kernel_size=3):
         """
         Args:
             data_root: Root directory containing normal X-ray images
@@ -129,6 +141,7 @@ class DSRNDataset(Dataset):
             use_gradient: Use morphology gradient for structure (default: True)
             clahe_clip_limit: CLAHE clip limit (default: 2.0)
             clahe_tile_size: CLAHE tile grid size (default: 8)
+            gradient_kernel_size: Morphology gradient kernel size (default: 3)
         """
         self.data_root = Path(data_root)
         self.image_size = image_size
@@ -144,13 +157,10 @@ class DSRNDataset(Dataset):
         self.use_gradient = use_gradient
         self.clahe_clip_limit = clahe_clip_limit
         self.clahe_tile_size = clahe_tile_size
+        self.gradient_kernel_size = gradient_kernel_size
 
-        # Determine number of input channels
-        self.input_channels = 1  # original
-        if use_clahe:
-            self.input_channels += 1
-        if use_gradient:
-            self.input_channels += 1
+        # 2-channel input: [original, clahe+gradient]
+        self.input_channels = 2
 
         # Lesion synthesizer
         self.lesion_synthesizer = DiverseLesionSynthesizer()
@@ -315,16 +325,18 @@ class DSRNDataset(Dataset):
             use_clahe=self.use_clahe,
             use_gradient=self.use_gradient,
             clahe_clip_limit=self.clahe_clip_limit,
-            clahe_tile_size=self.clahe_tile_size
-        )  # [C, H, W]
+            clahe_tile_size=self.clahe_tile_size,
+            gradient_kernel_size=self.gradient_kernel_size
+        )  # [2, H, W]: [original, clahe+gradient]
 
         x_lesion_multi = create_multichannel_input(
             x_lesion_gray,
             use_clahe=self.use_clahe,
             use_gradient=self.use_gradient,
             clahe_clip_limit=self.clahe_clip_limit,
-            clahe_tile_size=self.clahe_tile_size
-        )  # [C, H, W]
+            clahe_tile_size=self.clahe_tile_size,
+            gradient_kernel_size=self.gradient_kernel_size
+        )  # [2, H, W]: [original, clahe+gradient]
 
         # Convert to torch tensors
         x_normal = torch.from_numpy(x_normal_multi).float()  # [C, H, W]
@@ -365,7 +377,8 @@ class AbnormalDataset(Dataset):
     def __init__(self, data_root, image_size=256, has_masks=False,
                  window_center=2048, window_width=4096,
                  use_clahe=True, use_gradient=True,
-                 clahe_clip_limit=2.0, clahe_tile_size=8):
+                 clahe_clip_limit=2.0, clahe_tile_size=8,
+                 gradient_kernel_size=3):
         """
         Args:
             data_root: Root directory containing abnormal images
@@ -377,6 +390,7 @@ class AbnormalDataset(Dataset):
             use_gradient: Use morphology gradient for structure
             clahe_clip_limit: CLAHE clip limit
             clahe_tile_size: CLAHE tile size
+            gradient_kernel_size: Morphology gradient kernel size
         """
         self.data_root = Path(data_root)
         self.image_size = image_size
@@ -389,6 +403,7 @@ class AbnormalDataset(Dataset):
         self.use_gradient = use_gradient
         self.clahe_clip_limit = clahe_clip_limit
         self.clahe_tile_size = clahe_tile_size
+        self.gradient_kernel_size = gradient_kernel_size
 
         # Image and mask directories
         # Try 'images' subdirectory first, fallback to data_root if not found
@@ -511,8 +526,9 @@ class AbnormalDataset(Dataset):
             use_clahe=self.use_clahe,
             use_gradient=self.use_gradient,
             clahe_clip_limit=self.clahe_clip_limit,
-            clahe_tile_size=self.clahe_tile_size
-        )  # [C, H, W]
+            clahe_tile_size=self.clahe_tile_size,
+            gradient_kernel_size=self.gradient_kernel_size
+        )  # [2, H, W]: [original, clahe+gradient]
 
         # Convert to torch tensors
         x_abnormal = torch.from_numpy(x_abnormal_multi).float()  # [C, H, W]
@@ -548,7 +564,8 @@ def create_dataloaders(config):
         use_clahe=config.use_clahe,
         use_gradient=config.use_gradient,
         clahe_clip_limit=config.clahe_clip_limit,
-        clahe_tile_size=config.clahe_tile_size
+        clahe_tile_size=config.clahe_tile_size,
+        gradient_kernel_size=config.gradient_kernel_size
     )
 
     # Split train/val

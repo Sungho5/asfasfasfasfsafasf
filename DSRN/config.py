@@ -21,9 +21,10 @@ class DSRNConfig:
     # Multi-channel input (texture + structure)
     use_clahe: bool = True  # CLAHE for texture enhancement
     use_gradient: bool = True  # Morphology gradient for structure
-    input_channels: int = 3  # [original, clahe, gradient]
+    input_channels: int = 2  # [original, clahe+gradient]
     clahe_clip_limit: float = 2.0
     clahe_tile_size: int = 8
+    gradient_kernel_size: int = 3  # Morphology gradient kernel size
 
     # ===== Model Architecture =====
     base_channels: int = 64

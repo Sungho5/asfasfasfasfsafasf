@@ -489,7 +489,8 @@ def main():
             use_clahe=config.use_clahe,
             use_gradient=config.use_gradient,
             clahe_clip_limit=config.clahe_clip_limit,
-            clahe_tile_size=config.clahe_tile_size
+            clahe_tile_size=config.clahe_tile_size,
+            gradient_kernel_size=config.gradient_kernel_size
         )
 
         # Test on abnormal images

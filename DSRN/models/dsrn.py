@@ -118,7 +118,7 @@ if __name__ == "__main__":
 
     @dataclass
     class TestConfig:
-        input_channels: int = 3
+        input_channels: int = 2  # [original, clahe+gradient]
         base_channels: int = 64
         num_prototypes: int = 1000
         feature_dim: int = 512
@@ -127,8 +127,8 @@ if __name__ == "__main__":
     config = TestConfig()
     model = DSRN(config)
 
-    # Dummy input (3 channels)
-    x = torch.randn(2, 3, 256, 256)
+    # Dummy input (2 channels: [original, clahe+gradient])
+    x = torch.randn(2, 2, 256, 256)
 
     # Forward
     x_fused, anomaly_map, fusion_weights = model(x)

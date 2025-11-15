@@ -20,9 +20,9 @@ def visualize_results(x_normal, x_lesion, x_recon, mask_lesion, anomaly_map, fus
     Visualize DSRN results
 
     Args:
-        x_normal: [B, C, H, W] ground truth - C=3: [original, clahe, gradient]
-        x_lesion: [B, C, H, W] input with lesion - C=3
-        x_recon: [B, C, H, W] reconstruction - C=3
+        x_normal: [B, C, H, W] ground truth - C=2: [original, clahe+gradient]
+        x_lesion: [B, C, H, W] input with lesion - C=2
+        x_recon: [B, C, H, W] reconstruction - C=2
         mask_lesion: [B, 1, H, W] lesion mask
         anomaly_map: [B, 1, H, W] predicted anomaly
         fusion_weights: [B, 1, H, W] fusion weights
@@ -256,11 +256,11 @@ if __name__ == "__main__":
     """Test"""
     import torch
 
-    # Dummy data (multi-channel: C=3)
+    # Dummy data (multi-channel: C=2)
     B = 2
-    x_normal = torch.rand(B, 3, 256, 256)  # 3-channel: [original, clahe, gradient]
-    x_lesion = torch.rand(B, 3, 256, 256)
-    x_recon = torch.rand(B, 3, 256, 256)
+    x_normal = torch.rand(B, 2, 256, 256)  # 2-channel: [original, clahe+gradient]
+    x_lesion = torch.rand(B, 2, 256, 256)
+    x_recon = torch.rand(B, 2, 256, 256)
     mask_lesion = torch.rand(B, 1, 256, 256)
     anomaly_map = torch.rand(B, 1, 256, 256)
     fusion_weights = torch.rand(B, 1, 256, 256)

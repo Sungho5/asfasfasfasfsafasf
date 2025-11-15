@@ -84,10 +84,10 @@ class DSRNTrainer:
         Compute all losses with enhanced components
 
         Args:
-            x_normal: [B, C, H, W] ground truth (original) - C=3: [original, clahe, gradient]
-            x_lesion: [B, C, H, W] input (with synthetic lesion) - C=3
+            x_normal: [B, C, H, W] ground truth - C=2: [original, clahe+gradient]
+            x_lesion: [B, C, H, W] input (with synthetic lesion) - C=2
             mask_lesion: [B, 1, H, W] lesion mask (single channel)
-            x_recon: [B, C, H, W] reconstructed output - C=3
+            x_recon: [B, C, H, W] reconstructed output - C=2
             anomaly_map: [B, 1, H, W] predicted anomaly map (single channel)
             epoch: Current epoch (for warm-up)
 
@@ -232,8 +232,8 @@ class DSRNTrainer:
         pbar = tqdm(self.train_loader, desc=f'Epoch {epoch}/{self.config.num_epochs}')
 
         for batch_idx, batch in enumerate(pbar):
-            x_normal = batch['x_normal'].to(self.device)  # [B, C, H, W] C=3: [original, clahe, gradient]
-            x_lesion = batch['x_lesion'].to(self.device)  # [B, C, H, W] C=3
+            x_normal = batch['x_normal'].to(self.device)  # [B, C, H, W] C=2: [original, clahe+gradient]
+            x_lesion = batch['x_lesion'].to(self.device)  # [B, C, H, W] C=2
             mask_lesion = batch['mask_lesion'].to(self.device)  # [B, 1, H, W]
 
             # Phase 1: Update prototypes with normal images (no lesion)
@@ -301,8 +301,8 @@ class DSRNTrainer:
         pbar = tqdm(self.val_loader, desc='Validation')
 
         for batch in pbar:
-            x_normal = batch['x_normal'].to(self.device)  # [B, C, H, W] C=3
-            x_lesion = batch['x_lesion'].to(self.device)  # [B, C, H, W] C=3
+            x_normal = batch['x_normal'].to(self.device)  # [B, C, H, W] C=2
+            x_lesion = batch['x_lesion'].to(self.device)  # [B, C, H, W] C=2
             mask_lesion = batch['mask_lesion'].to(self.device)  # [B, 1, H, W]
 
             # Forward
@@ -458,8 +458,8 @@ class DSRNTrainer:
 
         # Get one batch
         batch = next(iter(self.val_loader))
-        x_normal = batch['x_normal'].to(self.device)  # [B, C, H, W] C=3
-        x_lesion = batch['x_lesion'].to(self.device)  # [B, C, H, W] C=3
+        x_normal = batch['x_normal'].to(self.device)  # [B, C, H, W] C=2
+        x_lesion = batch['x_lesion'].to(self.device)  # [B, C, H, W] C=2
         mask_lesion = batch['mask_lesion'].to(self.device)  # [B, 1, H, W]
 
         # Forward
